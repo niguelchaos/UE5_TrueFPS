@@ -48,6 +48,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim")
 	FIKProperties IKProperties;
 
+	/////////////////////////////////// State ///////////////////////////////////
+	UPROPERTY(BlueprintReadOnly, Category = "Anim")
+	FRotator LastRotation;
+
 	///////////////////////////////// IK Variables ///////////////////////////////////
 	// dont want to reference cam transform each time, want to be slightly different
 	UPROPERTY(EditAnywhere,BlueprintReadWrite, Category = "Anim")
@@ -59,6 +63,21 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim")
 	FTransform RHandToSightsTransform;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim")
+	FTransform OffsetTransform;
+
+	// 0 = idle, 1 = aiming
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Anim")
+	float ADSWeight = 0.f;
+
+	///////////////////////////////// Accumulative Offsets ///////////////////////////////////
+	UPROPERTY(BlueprintReadWrite, Category = "Anim")
+	FRotator AccumulativeRotation;
+
+	// tries to catch up to target by interpolating towards it - actual offset
+	UPROPERTY(BlueprintReadWrite, Category = "Anim")
+	FRotator AccumulativeRotationInterp;
 	
 };
 

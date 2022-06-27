@@ -3,8 +3,11 @@
 
 #include "TrueFPSAnimInstance.h"
 
+#include <concrt.h>
+
 #include "Camera/CameraComponent.h"
 #include "Character/TrueFPSCharacter.h"
+#include "Kismet/KismetMathLibrary.h"
 
 
 UTrueFPSAnimInstance::UTrueFPSAnimInstance()
@@ -51,6 +54,8 @@ void UTrueFPSAnimInstance::NativeUpdateAnimation(float DeltaTime)
 
 	SetVars(DeltaTime);
 	CalculateWeaponSway(DeltaTime);
+
+	LastRotation = CameraTransform.Rotator();
 	
 }
 
@@ -79,11 +84,59 @@ void UTrueFPSAnimInstance::SetVars(const float DeltaTime)
 	const FTransform& RootOffset = Mesh->GetSocketTransform(FName("root"), RTS_Component).Inverse() * Mesh->GetSocketTransform(FName("ik_hand_root"));
 	RelativeCameraTransform = CameraTransform.GetRelativeTransform(RootOffset);
 
-	//	
+	// every tick set to chars adsweight
+	ADSWeight = Character->ADSWeight;
+
+	/*
+	 * OFFSETS
+	 */
+	
+	// Accumulative Rotation
+	constexpr float AngleClamp = 6.f; // if super spin
+	const FRotator& AddRotation = CameraTransform.Rotator() - LastRotation;
+	// pitch and yaw with multiplier looks a bit better because want to pitch and yaw more
+	FRotator AddRotationClamped = FRotator(
+		FMath::ClampAngle(AddRotation.Pitch, -AngleClamp, AngleClamp) * 1.5f,
+		FMath::ClampAngle(AddRotation.Yaw, -AngleClamp, AngleClamp), 0.f);
+
+	// when looking horizontally, add roll
+	AddRotationClamped.Roll = AddRotationClamped.Yaw * 0.7f;
+	
+	AccumulativeRotation += AddRotationClamped;
+	// set it back to base rotation - essentially our target
+	// will look strange if plugged directly because its constantly changing
+	AccumulativeRotation = UKismetMathLibrary::RInterpTo(AccumulativeRotation, FRotator::ZeroRotator, DeltaTime, 30.f);
+	AccumulativeRotationInterp = UKismetMathLibrary::RInterpTo(AccumulativeRotationInterp, AccumulativeRotation, DeltaTime, 5.f);
+	
 }
 void UTrueFPSAnimInstance::CalculateWeaponSway(const float DeltaTime)
 {
+	FVector LocationOffset = FVector::ZeroVector;
+	FRotator RotationOffset = FRotator::ZeroRotator;
+
+	// keep having additives
+	// decrement it down to 0 over time if idle
+
+	// inverse rotation - going in direction of camera, want it to lag behind
+	// want to save because we will add it to location as well
+	const FRotator& AccumulativeRotationInterpInverse = AccumulativeRotationInterp.GetInverse();
+	RotationOffset += AccumulativeRotationInterpInverse;
+
+	// therefore want location to lag behind too
+	LocationOffset += FVector(0.f, AccumulativeRotationInterpInverse.Yaw, AccumulativeRotationInterpInverse.Pitch) / 6.f;
+
+
+
+
+
+
+	// less is faster
+	LocationOffset *= IKProperties.WeightScale; 
+	RotationOffset.Pitch *= IKProperties.WeightScale;
+	RotationOffset.Yaw *= IKProperties.WeightScale;
+	RotationOffset.Roll *= IKProperties.WeightScale;
 	
+	OffsetTransform = FTransform(RotationOffset, LocationOffset);
 }
 
 void UTrueFPSAnimInstance::SetIKTransforms()

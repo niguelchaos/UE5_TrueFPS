@@ -14,7 +14,20 @@ ATrueFPSCharacter::ATrueFPSCharacter()
 
 	// camera lags behind 1 frame - tick in the mesh called later, when camera updated the tick will be called on mesh
 	GetMesh()->SetTickGroup(ETickingGroup::TG_PostUpdateWork);
+	// even when invisible, will still cast shadow and reflections
+	GetMesh()->bVisibleInReflectionCaptures = true;
+	GetMesh()->bCastHiddenShadow = true; 
 
+	// Clientmesh will copy pose of primary mesh, but no head
+	ClientMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("ClientMesh"));
+	// clientmesh should not cast shadow - only want our mesh to cast shadow
+	ClientMesh->SetCastShadow(false);
+	ClientMesh->bCastHiddenShadow = false;
+	// cannot see client mesh in mirrors
+	ClientMesh->bVisibleInReflectionCaptures = false;
+	ClientMesh->SetTickGroup(ETickingGroup::TG_PostUpdateWork);
+	ClientMesh->SetupAttachment(GetMesh());
+	
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	// camera should be on head, always facing controller
 	Camera->bUsePawnControlRotation = true;
@@ -26,7 +39,31 @@ void ATrueFPSCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-// check if in server, begin play called in both server and client
+	// Setup ADS timeline
+	if(AimingCurve)
+	{
+		// will crash if no aiming curve
+		FOnTimelineFloat TimelineFloat;
+		TimelineFloat.BindDynamic(this, &ATrueFPSCharacter::TimelineProgress);
+
+		AimingTimeline.AddInterpFloat(AimingCurve, TimelineFloat);
+	}
+
+
+	// Client mesh logic
+	if(IsLocallyControlled())
+	{
+		ClientMesh->HideBoneByName(FName("neck_01"), EPhysBodyOp::PBO_None);
+		GetMesh()->SetVisibility(false);
+	}
+	else
+	{
+		// if not locally controlled, no need for client mesh - destroy
+		ClientMesh->DestroyComponent();
+	}
+	
+	// check if in server, begin play called in both server and client
+	// Spawning Weapons
 	if (HasAuthority())
 	{
 		for(const TSubclassOf<AWeapon>& WeaponClass : DefaultWeapons)
@@ -57,11 +94,22 @@ void ATrueFPSCharacter::BeginPlay()
 	}
 }
 
+void ATrueFPSCharacter::Tick(const float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	// makes timeline track run
+	AimingTimeline.TickTimeline(DeltaTime);
+}
+
 
 // Called to bind functionality to input
 void ATrueFPSCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	PlayerInputComponent->BindAction(FName("Aim"), EInputEvent::IE_Pressed, this, &ATrueFPSCharacter::StartAiming);
+	PlayerInputComponent->BindAction(FName("Aim"), EInputEvent::IE_Released, this, &ATrueFPSCharacter::ReverseAiming);
 
 	PlayerInputComponent->BindAction(FName("NextWeapon"), EInputEvent::IE_Pressed, this, &ATrueFPSCharacter::NextWeapon);
 	PlayerInputComponent->BindAction(FName("LastWeapon"), EInputEvent::IE_Pressed, this, &ATrueFPSCharacter::LastWeapon);
@@ -78,11 +126,22 @@ void ATrueFPSCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME_CONDITION(ATrueFPSCharacter, Weapons, COND_None);
-	
 	// weapon not replicated unless you create a replication policy?
 	DOREPLIFETIME_CONDITION(ATrueFPSCharacter, CurrentWeapon, COND_None);
+	// set adsweight to replicate in first place - we arent actually using the condition 
+	DOREPLIFETIME_CONDITION(ATrueFPSCharacter, ADSWeight, COND_None);
 	
 }
+
+void ATrueFPSCharacter::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)
+{
+	Super::PreReplication(ChangedPropertyTracker);
+
+	// only replicate of 0 or 1 - aiming or idle
+	// class, param, bool - if true replicate
+	DOREPLIFETIME_ACTIVE_OVERRIDE(ATrueFPSCharacter, ADSWeight, ADSWeight >= 1.f || ADSWeight <= 0.f);
+}
+
 
 void ATrueFPSCharacter::OnRep_CurrentWeapon(const AWeapon* OldWeapon)
 {
@@ -120,8 +179,9 @@ void ATrueFPSCharacter::EquipWeapon(const int32 Index)
 	// dont swap to same weapon
 	if (!Weapons.IsValidIndex(Index) || CurrentWeapon == Weapons[Index]) return;
 
-// Client
-	if (IsLocallyControlled())
+
+	// if locally controlled or we are the server
+	if (IsLocallyControlled() || HasAuthority())
 	{
 		// change index to new index
 		CurrentIndex = Index;
@@ -130,8 +190,11 @@ void ATrueFPSCharacter::EquipWeapon(const int32 Index)
 		CurrentWeapon = Weapons[Index];
 		OnRep_CurrentWeapon(OldWeapon);
 	}
-	else if (!HasAuthority())
+	
+	// Client
+	if (!HasAuthority())
 	{
+		// tell server to equip
 		Server_SetCurrentWeapon(Weapons[Index]);
 	}
 
@@ -146,7 +209,54 @@ void ATrueFPSCharacter::Server_SetCurrentWeapon_Implementation(AWeapon* NewWeapo
 	OnRep_CurrentWeapon(OldWeapon);
 }
 
+void ATrueFPSCharacter::StartAiming()
+{
+	if (IsLocallyControlled() || HasAuthority())
+	{
+		// we are starting to aim forward
+		Multi_Aim_Implementation(true);
+	}
 
+	if (!HasAuthority())
+	{
+		// no authority = client
+		// round trip to server, rpc to server, tell to run function, also multicast to every client 
+		Server_Aim(true);
+	}
+}
+void ATrueFPSCharacter::ReverseAiming()
+{
+	if (IsLocallyControlled() || HasAuthority())
+	{
+		Multi_Aim_Implementation(false);
+	}
+
+	if (!HasAuthority())
+	{
+		// no authority = client
+		// round trip to server, rpc to server, tell to run function, also multicast to every client 
+		Server_Aim(false);
+	}
+}
+
+void ATrueFPSCharacter::Multi_Aim_Implementation(const bool bForward)
+{
+	if(bForward)
+	{
+		AimingTimeline.Play();
+	}
+	else
+	{
+		AimingTimeline.Reverse();
+	}
+}
+
+
+
+void ATrueFPSCharacter::TimelineProgress(const float Value)
+{
+	ADSWeight = Value;
+}
 
 
 

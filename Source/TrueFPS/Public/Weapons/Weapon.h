@@ -20,14 +20,20 @@ struct FIKProperties
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	class UAnimSequence* AnimPose;
 
-	// distance between camera and sights when aiming
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float AimOffset = 15.f;
 
 	// custom weapon offset transform idk wtf this
 	// offset from basepose to where you want weapon to be
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FTransform CustomOffsetTransform;
+
+	// distance between camera and sights when aiming
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	float AimOffset = 15.f;
+
+	// makes sway more sluggish or snappier
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	float WeightScale = 1.f;
+	
 };
 
 // Abstract because dont want to directly use this class
